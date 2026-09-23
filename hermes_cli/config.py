@@ -2208,6 +2208,14 @@ def apply_terminal_config_to_env(
             raw_cwd = str(value or "").strip()
             if isinstance(value, str) and not _is_ssh_remote_tilde_cwd(terminal_backend, raw_cwd):
                 value = os.path.expanduser(value)
+            local_cli_cwd = target.get("_HERMES_LOCAL_CLI_CWD")
+            if (
+                local_cli_cwd
+                and terminal_backend.strip().lower() == "local"
+                and target.get("_HERMES_GATEWAY") != "1"
+                and target.get("TERMINAL_CWD") == local_cli_cwd
+            ):
+                continue
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)
     return target
