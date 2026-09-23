@@ -349,6 +349,8 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
         if env_var == "TERMINAL_CWD":
             if not _is_gateway:
                 os.environ[env_var] = str(val)
+                if effective_backend == "local":
+                    os.environ["_HERMES_LOCAL_CLI_CWD"] = str(val)
         elif _file_has_terminal_config or env_var not in os.environ:
             os.environ[env_var] = json.dumps(val) if isinstance(val, (list, dict)) else str(val)
 
@@ -1998,7 +2000,7 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[0m\x1b[?25h"  # reset attributes, show cursor
 )
 _KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
-_MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
+_MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;1m"
 _EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 
 
