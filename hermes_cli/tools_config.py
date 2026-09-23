@@ -150,9 +150,13 @@ def _get_effective_configurable_toolsets():
     return result
 
 
-def _get_plugin_toolset_keys() -> set:
-    """Return the set of toolset keys provided by plugins."""
+def _get_plugin_toolset_keys(*, synchronize: bool = False) -> set:
+    """Return plugin toolset keys, synchronizing before positive selection."""
     try:
+        if synchronize:
+            from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+            discover_plugins()
+            return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
         # Non-blocking on CLI startup: while background discovery is still importing, serve last
         # launch's persisted key set instead of joining the discovery thread.
         from hermes_cli.plugins import get_plugin_toolset_keys_nowait
@@ -563,7 +567,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     toolset_names = [str(ts) for ts in toolset_names]
 
     configurable_keys = _configurable_keys()
-    plugin_ts_keys = _get_plugin_toolset_keys()
+    plugin_ts_keys = _get_plugin_toolset_keys(synchronize=True)
     platform_default_keys = _platform_default_keys()
     # Plugin toolsets are first-class on a saved list: ``[hermes-cli, a2a]`` must survive filtering.
     # Plugin-provided toolsets are first-class on a platform-toolsets list — explicit config like
