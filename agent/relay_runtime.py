@@ -161,8 +161,11 @@ def _load_segments_config() -> dict[str, Any]:
     on_compaction = False
     max_turns = 0
     try:
-        from gateway.run import _load_gateway_config  # late import
-        telemetry = (_load_gateway_config().get("gateway") or {}).get("telemetry") or {}
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_constants import get_hermes_home
+
+        config = load_user_config_effective(get_hermes_home() / "config.yaml")
+        telemetry = (config.get("gateway") or {}).get("telemetry") or {}
         segments = telemetry.get("session_segments") or {}
         on_compaction = bool(segments.get("on_compaction", False))
         try:
