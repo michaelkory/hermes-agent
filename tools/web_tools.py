@@ -377,15 +377,18 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             return fallback
         return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
 
-    response_data = search_memo.lookup(provider.name, query, limit)
+    # Optional provider-defined namespace for result-affecting settings; routing
+    # and rescue still use the stable registered provider name.
+    cache_key = getattr(provider, "search_cache_key", provider.name)
+    response_data = search_memo.lookup(cache_key, query, limit)
     if response_data is None:
-        with search_memo.flight_lock(provider.name, query, limit):
+        with search_memo.flight_lock(cache_key, query, limit):
             # Re-check inside the lock: a concurrent identical call may have stored.
-            response_data = search_memo.lookup(provider.name, query, limit)
+            response_data = search_memo.lookup(cache_key, query, limit)
             if response_data is None:
                 response_data, was_rescued = _paid_search()
                 if not was_rescued:
-                    search_memo.store(provider.name, query, limit, response_data)
+                    search_memo.store(cache_key, query, limit, response_data)
     return slice_search_response(response_data, limit)
 
 
