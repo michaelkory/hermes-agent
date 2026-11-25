@@ -42,6 +42,22 @@ def _rejected(db: SessionDB, session: dict) -> str:
     return error
 
 
+@pytest.mark.parametrize("field", ["tool_names", "title_source", "created_source"])
+@pytest.mark.parametrize("value", [{"unexpected": "object"}, ["unexpected"], 7, 1.5, True])
+def test_import_rejects_non_string_history_metadata_atomically(db, field, value):
+    payload = [
+        _payload("valid-first", system_prompt="must not be written", tool_names='["synthetic"]'),
+        _payload("invalid-second", **{field: value}),
+    ]
+    result = db.import_sessions(payload)
+    assert result["ok"] is False
+    assert result["imported"] == result["skipped"] == 0
+    assert field in result["errors"][0]["error"]
+    assert all(db.get_session(item["id"]) is None for item in payload)
+    assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+    assert db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0] == 0
+
+
 def test_import_rejects_non_finite_session_floats(db):
     for field in ("started_at", "ended_at", "estimated_cost_usd", "actual_cost_usd"):
         # 1e309 decodes to float('inf'); NaN arrives the same way (json NaN syntax).

@@ -11,12 +11,16 @@ from hermes_state import SessionDB
 MIB = 1024 * 1024
 
 
-def test_only_explicit_store_accepts_a_session_above_the_default(tmp_path):
+@pytest.mark.parametrize("large_pin", [False, True])
+def test_only_explicit_store_accepts_a_session_above_the_default(tmp_path, large_pin):
     payload = {
         "id": "large-original",
         "system_prompt": "Historical instructions stay historical.",
         "messages": [{"role": "user", "content": "x" * (5 * MIB)}],
     }
+    if large_pin:
+        payload["tool_names"] = payload["messages"][0]["content"]
+        payload["messages"][0]["content"] = "small message, large historical pin"
     default = SessionDB(db_path=tmp_path / "default.db")
     try:
         rejected = default.import_sessions([payload])
@@ -37,6 +41,7 @@ def test_only_explicit_store_accepts_a_session_above_the_default(tmp_path):
         exported = configured.export_session(payload["id"], include_inactive=True)
         assert exported["id"] == payload["id"]
         assert exported["system_prompt"] == payload["system_prompt"]
+        assert exported["tool_names"] == payload.get("tool_names")
         assert exported["messages"][0]["content"] == payload["messages"][0]["content"]
     finally:
         configured.close()
@@ -58,8 +63,12 @@ def test_allowance_is_positive_integer_bounded_by_transaction_ceiling(tmp_path, 
     assert not path.exists(), "invalid policy must fail before opening a database"
 
 
-def test_configured_limit_counts_utf8_bytes_at_the_exact_boundary(tmp_path):
+@pytest.mark.parametrize("metadata", [None, "tool_names", "title_source", "created_source"])
+def test_configured_limit_counts_utf8_bytes_at_the_exact_boundary(tmp_path, metadata):
     payload = {"id": "unicode", "messages": [{"role": "user", "content": "雪" * 100}]}
+    if metadata:
+        payload[metadata] = payload["messages"][0]["content"]
+        payload["messages"][0]["content"] = "small"
     size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     for limit, accepted in ((size, True), (size - 1, False)):
         store = SessionDB(db_path=tmp_path / f"boundary-{limit}.db", import_max_session_bytes=limit)
@@ -84,13 +93,18 @@ def test_configured_store_still_rejects_above_its_session_allowance(tmp_path):
         store.close()
 
 
-def test_larger_session_allowance_does_not_widen_the_transaction(tmp_path):
+@pytest.mark.parametrize("large_pin", [False, True])
+def test_larger_session_allowance_does_not_widen_the_transaction(tmp_path, large_pin):
     store = SessionDB(db_path=tmp_path / "batch.db", import_max_session_bytes=25 * MIB)
     try:
         payload = [
             {"id": sid, "messages": [{"role": "user", "content": "x" * (13 * MIB)}]}
             for sid in ("first", "second")
         ]
+        if large_pin:
+            for session in payload:
+                session["tool_names"] = session["messages"][0]["content"]
+                session["messages"][0]["content"] = "small message, large historical pin"
         result = store.import_sessions(payload)
         assert result["ok"] is False
         assert result["imported"] == 0
@@ -104,8 +118,10 @@ def test_large_native_backup_retains_all_stored_generations(tmp_path):
     source = SessionDB(db_path=tmp_path / "source.db")
     target = SessionDB(db_path=tmp_path / "target.db", import_max_session_bytes=25 * MIB)
     sid = "original-history"
+    initial_meta = list(target._conn.execute("SELECT key, value FROM state_meta ORDER BY key"))
     try:
         source.create_session(sid, source="slack", system_prompt="Original historical prompt.")
+        source.update_session_tool_names(sid, ["synthetic-history-tool"])
         archived = source.append_message(sid, "user", "An archived generation", platform_message_id="old-turn")
         compacted = source.append_message(sid, "assistant", "A compacted generation")
         source.append_message(sid, "user", "x" * (5 * MIB), message_uid="original-user")
@@ -119,7 +135,13 @@ def test_large_native_backup_retains_all_stored_generations(tmp_path):
         source._conn.execute("UPDATE messages SET active = 0 WHERE id = ?", (archived,))
         source._conn.execute("UPDATE messages SET active = 0, compacted = 1 WHERE id = ?", (compacted,))
         source._conn.execute(
-            "UPDATE sessions SET archived = 1, auto_archived = 1, pinned = 1, hidden = 1 WHERE id = ?", (sid,),
+            "UPDATE sessions SET archived = 1, auto_archived = 1, pinned = 1, hidden = 1, "
+            "title = 'Historical title', title_source = 'llm', created_source = 'cli', "
+            "profile_name = 'old-profile', transport_profile = 'old-transport', "
+            "session_key = 'old-route', chat_id = 'old-chat', chat_type = 'dm', thread_id = 'old-thread', "
+            "origin_json = '{}', handoff_state = 'pending', handoff_platform = 'slack', handoff_error = 'old', "
+            "rewind_count = 7, last_activity_at = 123, last_activity_description = 'old work', "
+            "last_activity_provenance = 'old-agent' WHERE id = ?", (sid,),
         )
         source._conn.commit()
         payload = json.loads(json.dumps(source.export_session(sid, include_inactive=True)))
@@ -130,6 +152,19 @@ def test_large_native_backup_retains_all_stored_generations(tmp_path):
         assert result["imported_ids"] == [sid]
         restored = target.export_session(sid, include_inactive=True)
         assert restored["system_prompt"] == payload["system_prompt"]
+        for field in ("tool_names", "title", "title_source", "created_source"):
+            assert restored[field] == payload[field]
+        assert restored["source"] == "slack" and restored["created_source"] == "cli"
+        assert restored["message_count"] == 3 and restored["tool_call_count"] == 1
+        for field in ("profile_name", "transport_profile", "session_key", "chat_id", "chat_type", "thread_id",
+                      "origin_json", "handoff_state", "handoff_platform", "handoff_error", "last_activity_at",
+                      "last_activity_description", "last_activity_provenance"):
+            assert restored[field] is None, field
+        assert restored["rewind_count"] == 0
+        for table in ("gateway_routing", "session_admissions", "worker_executions", "worker_receipts",
+                      "session_turn_leases", "compression_locks", "async_delegations", "runtime_epoch"):
+            assert target._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+        assert list(target._conn.execute("SELECT key, value FROM state_meta ORDER BY key")) == initial_meta
         for flag in ("archived", "auto_archived", "pinned", "hidden"):
             assert restored[flag] == payload[flag]
         # SQLite-local primary keys may differ. Native batch insertion also fills an absent

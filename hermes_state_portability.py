@@ -31,6 +31,7 @@ logger = logging.getLogger("hermes_state")
 _IMPORT_SESSION_TEXT_FIELDS = (
     "source", "user_id", "model", "system_prompt", "end_reason", "cwd", "git_branch", "git_repo_root",
     "billing_provider", "billing_base_url", "billing_mode", "cost_status", "cost_source", "pricing_version", "title",
+    "tool_names", "title_source", "created_source",
 )
 # ``role`` is validated separately (non-empty string).
 _IMPORT_MESSAGE_TEXT_FIELDS = (
@@ -41,31 +42,32 @@ _IMPORT_MESSAGE_JSON_FIELDS = (
     "reasoning_details", "codex_reasoning_items", "codex_message_items", "absorbed_message_uids", "tool_call_uids",
 )
 _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
-                           id, source, user_id, model, model_config, system_prompt,
-                           system_prompt_hash,
+                           id, source, created_source, user_id, model, model_config, system_prompt,
+                           system_prompt_hash, tool_names,
                            parent_session_id, started_at, ended_at, end_reason,
                            message_count, tool_call_count, input_tokens, output_tokens,
                            cache_read_tokens, cache_write_tokens, reasoning_tokens,
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived, auto_archived, pinned, hidden
+                           pricing_version, title, title_source, api_call_count, archived, auto_archived, pinned, hidden
                        )
                        VALUES (
-                           :id, :source, :user_id, :model, :model_config,
-                           NULL, :system_prompt_hash, NULL, :started_at, :ended_at,
+                           :id, :source, :created_source, :user_id, :model, :model_config,
+                           NULL, :system_prompt_hash, :tool_names, NULL, :started_at, :ended_at,
                            :end_reason, 0, 0, :input_tokens, :output_tokens,
                            :cache_read_tokens, :cache_write_tokens,
                            :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
-                           :cost_source, :pricing_version, :title,
+                           :cost_source, :pricing_version, :title, :title_source,
                            :api_call_count, :archived, :auto_archived, :pinned, :hidden
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
     "user_id", "model", "model_config", "end_reason", "cwd", "git_branch", "git_repo_root", "billing_provider",
     "billing_base_url", "billing_mode", "cost_status", "cost_source", "pricing_version", "title",
+    "title_source", "created_source",
 )
 _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
@@ -731,6 +733,7 @@ class SessionPortabilityMixin:
         params = {
             "id": session_id, "source": str(raw.get("source") or "import"),
             "system_prompt_hash": self._store_system_prompt(conn, raw.get("system_prompt")),
+            "tool_names": self._store_system_prompt(conn, raw.get("tool_names")),
             "started_at": time.time() if started_at is None else started_at,
             **{col: 1 if self._coerce_or(raw.get(col), int, 0) else 0 for col in _IMPORT_FLAG_COLS},
             **{col: raw.get(col) for col in _IMPORT_PASSTHROUGH_COLS},
@@ -803,6 +806,8 @@ class SessionPortabilityMixin:
         """Import sessions exported by :meth:`export_session` or ``export_all``. Existing ids
         are skipped. A child keeps its parent only when the parent exists or is in the
         same payload; otherwise it is detached so partial imports pass FK validation.
+        Historical tool pin text and nullable title/creation provenance are preserved
+        verbatim, independently of live routing and process ownership.
         Gateway routing, handoff, rewind and other live runtime state are reset: this
         restores history, not ownership of a live channel or process. Export INCLUDES
         ``last_activity_*`` but import RESETS them to NULL — resurrecting a stale
