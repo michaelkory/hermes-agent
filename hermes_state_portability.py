@@ -657,6 +657,17 @@ class SessionPortabilityMixin:
             clean_messages.append(self._normalize_import_message(message, message_index))
         return {"session": clean_session, "messages": clean_messages}
 
+    def _validated_import_max_session_bytes(self, value: int | None) -> int | None:
+        """An explicit store allowance cannot disable or exceed the transaction guard."""
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= self._IMPORT_MAX_TOTAL_BYTES:
+            raise ValueError(
+                "import_max_session_bytes must be a positive integer no greater than "
+                f"{self._IMPORT_MAX_TOTAL_BYTES}"
+            )
+        return value
+
     def _validate_import_payload(self, sessions: list[dict[str, Any]]) -> tuple:
         """Size/shape/type validation of the whole payload; returns ``(normalized_items,
         errors)``. Every rejected entry is reported."""
@@ -701,7 +712,9 @@ class SessionPortabilityMixin:
             session_bytes = len(json.dumps(measured, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         except (TypeError, ValueError):
             raise ValueError("session must be JSON serializable") from None
-        if session_bytes > self._IMPORT_MAX_SESSION_BYTES:
+        session_limit = (self._IMPORT_MAX_SESSION_BYTES if self._import_max_session_bytes is None
+                         else self._import_max_session_bytes)
+        if session_bytes > session_limit:
             raise ValueError("session exceeds the import size limit")
         totals["bytes"] += session_bytes
         if totals["bytes"] > self._IMPORT_MAX_TOTAL_BYTES:

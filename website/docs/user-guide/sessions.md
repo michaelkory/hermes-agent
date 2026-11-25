@@ -499,6 +499,46 @@ hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delet
 
 Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. Markdown/QMD files hold the full history shown by the session, including turns archived by in-place compaction. Deletion compares that exact display transcript and the delegate set again inside the same database transaction that performs the delete; any intervening append, rewrite, rewind, compaction, or delegate change refuses deletion. The same display-history rule applies to `--format html`, `--only user-prompts` (with either Markdown or JSONL output), and `/save md|html`. Full-session JSON/JSONL exports (`hermes sessions export` without `--only`) and `/save json` (CLI, messaging, TUI, Desktop) are backups of every stored row, archived rows included (see [Export Sessions](#export-sessions)). `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
 
+### Native Backup Import Byte Allowance
+
+The native `SessionDB.import_sessions()` validator defaults to **5 MiB per
+session**, with a separate **25 MiB transaction ceiling**. A trusted native
+importer can give its destination `SessionDB` instance a larger session allowance:
+
+```python
+from hermes_state import SessionDB
+
+# destination_db_path is the intended destination profile's Path to state.db.
+store = SessionDB(
+    db_path=destination_db_path,
+    import_max_session_bytes=25 * 1024 * 1024,
+)
+try:
+    result = store.import_sessions([exported_session])
+finally:
+    store.close()
+```
+
+The argument is keyword-only and applies only to that store handle. It does not
+change other instances, profile configuration or process-global defaults. `None`
+retains the default; an explicit value must be a positive integer no greater than
+the transaction ceiling. Zero, booleans, non-integers and values above that ceiling
+are rejected before opening the database. There is no disable-the-guard value.
+
+The budget measures compact JSON UTF-8 bytes, excluding the derived `timings`
+field. Raising the session allowance does **not** change the transaction byte
+ceiling, session/message count limits, payload validation, atomic rejection,
+existing-ID skips, parent handling, archived-generation preservation or live
+routing/activity reset. Use the native machine-transfer projection with inactive
+rows included, not a display-expanded transcript. If several individually valid
+sessions exceed the transaction ceiling together, import them separately.
+
+Use direct store construction only where the native caller owns the destination;
+do not open a competing writer around a live gateway owner. The ordinary
+owner-proxied import path retains its existing defaults unless its owning store
+is explicitly constructed with the allowance. This is not a new CLI import
+command or a profile-wide configuration flag.
+
 ### Delete a Session
 
 ```bash
